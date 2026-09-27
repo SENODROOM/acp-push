@@ -133,14 +133,6 @@ function main() {
     fail(`Remote "${remote}" does not exist. Add it with: git remote add ${remote} <url>`);
   }
 
-  const current = git(['rev-parse', '--abbrev-ref', 'HEAD'], true).stdout.trim();
-  if (current && current !== 'HEAD' && current !== branch) {
-    console.log(
-      yellow(`⚠ You are on "${current}" but pushing "${branch}". ` +
-        `Your new commit stays on "${current}" — use "acp -b ${current}" to push it.`)
-    );
-  }
-
   step(['add', '.']);
 
   // "git diff --cached --quiet" exits 0 when nothing is staged.
@@ -150,7 +142,9 @@ function main() {
     step(['commit', '-m', message || randomMessage()]);
   }
 
-  step(['push', remote, branch]);
+  // "HEAD:<branch>" pushes whatever branch you're on (main, master, anything)
+  // to <branch> on the remote, so the default always lands on "main".
+  step(['push', remote, `HEAD:${branch}`]);
   console.log(green(`✔ Pushed to ${remote}/${branch}`));
 }
 

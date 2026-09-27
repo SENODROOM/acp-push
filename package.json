@@ -20,17 +20,5 @@
   "engines": {
     "node": ">=14"
   },
-  "license": "MIT",
-  "main": "index.js",
-  "directories": {
-    "lib": "lib"
-  },
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://SENODROOM/acp-push.git"
-  },
-  "author": "Muhammad Saad Amin"
+  "license": "MIT"
 }

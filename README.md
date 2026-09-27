@@ -11,8 +11,10 @@ runs:
 ```bash
 git add .
 git commit -m "<one of 25 random messages>"
-git push origin main
+git push origin HEAD:main
 ```
+
+`HEAD:main` means your current local branch (whether it's called `main`, `master` or anything else) is pushed to `main` on the remote.
 
 ## Install
 
@@ -44,7 +46,7 @@ acp -m "Fix login bug"   # custom message
 ## Notes
 
 - If there is nothing new to commit, `acp` skips the commit and still pushes, so any commits you made earlier get sent.
-- If you're on a different branch than the one you're pushing, `acp` warns you, since your new commit lives on your current branch.
+- `-b <name>` pushes your current local branch to `<name>` on the remote, creating it there if it doesn't exist yet.
 - `-u` needs a remote called `upstream`. Add one with `git remote add upstream <url>`.
 
 ## Custom messages

@@ -131,7 +131,7 @@ function step(args, { extraArgs = [], env, hint } = {}) {
   });
   if (hint && result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0) {
-    const authError = /\b403\b|permission|denied|authentication failed|could not read username/i;
+    const authError = /\b403\b|permission|denied|authentication failed|could not read username|repository not found/i;
     if (hint && authError.test(result.stderr || '')) console.error(yellow(hint));
     fail(`"git ${args[0]}" failed (exit code ${result.status}).`);
   }

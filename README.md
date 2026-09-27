@@ -43,6 +43,25 @@ acp -u -b staging        # git push upstream staging
 acp -m "Fix login bug"   # custom message
 ```
 
+## Multiple GitHub accounts
+
+If you have the [GitHub CLI](https://cli.github.com) (`gh`) installed, `acp` picks the right account for each repo automatically:
+
+| Remote | Account used |
+| --- | --- |
+| `https://github.com/SENODROOM/acp-push` | `SENODROOM` |
+| `https://github.com/Gobibahu/some-repo` | `GobiBahu` (names are case-insensitive) |
+| `https://github.com/some-org/project` (no matching account) | the account you used last |
+
+Log in to each account once:
+
+```bash
+gh auth login   # log in as the first account
+gh auth login   # run again for the second account
+```
+
+`acp` switches gh's active account to whichever one it used, so "last used" is always the most recent one. The token is only used for that one push and doesn't replace your saved git login. SSH remotes and non-GitHub remotes use your normal git login.
+
 ## Notes
 
 - If there is nothing new to commit, `acp` skips the commit and still pushes, so any commits you made earlier get sent.

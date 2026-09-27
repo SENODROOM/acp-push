@@ -1,0 +1,36 @@
+{
+  "name": "acp-push",
+  "version": "1.0.0",
+  "description": "git add, commit (with a random message) and push in one command: acp",
+  "bin": {
+    "acp": "bin/acp.js"
+  },
+  "files": [
+    "bin",
+    "lib"
+  ],
+  "keywords": [
+    "git",
+    "cli",
+    "add",
+    "commit",
+    "push",
+    "acp"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "license": "MIT",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://SENODROOM/acp-push.git"
+  },
+  "author": "Muhammad Saad Amin"
+}

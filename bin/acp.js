@@ -2,6 +2,8 @@
 'use strict';
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const messages = require('../lib/messages');
 const pkg = require('../package.json');
 
@@ -30,6 +32,11 @@ GitHub accounts:
   If the GitHub CLI (gh) is installed, acp picks the gh account that matches
   the repo owner (github.com/<owner>/...). If none matches, it uses the
   account you used last. Log in to each account once with: gh auth login
+
+git-multi-commit:
+  If the repo root has a .git-multi-commit.json file, acp still adds and
+  commits locally, then runs git-multi-commit instead of git push.
+  -u and -b are ignored in that case.
 
 Examples:
   acp                      ${dim('# push to origin/main')}
@@ -102,12 +109,14 @@ function parseArgs(argv) {
 
 // ---------- process helpers ----------
 // Arguments are passed as an array (no shell), so commit messages with
-// quotes, spaces or special characters are always safe.
-function run(cmd, args, { quiet = false, env, stdio } = {}) {
+// quotes, spaces or special characters are always safe. Only pass
+// `shell: true` for commands that take no user input.
+function run(cmd, args, { quiet = false, env, stdio, shell = false } = {}) {
   return spawnSync(cmd, args, {
     stdio: stdio || (quiet ? 'pipe' : 'inherit'),
     encoding: 'utf8',
     env: env ? { ...process.env, ...env } : process.env,
+    shell,
   });
 }
 
@@ -239,6 +248,31 @@ function githubAuth(remoteUrl) {
   };
 }
 
+// ---------- git-multi-commit ----------
+// Projects set up with git-multi-commit keep this file in the repo root
+// (the same place git-multi-commit looks for it). For those, acp runs
+// git-multi-commit instead of git push.
+const MULTI_COMMIT_CONFIG = '.git-multi-commit.json';
+
+function usesMultiCommit() {
+  const root = git(['rev-parse', '--show-toplevel'], { quiet: true }).stdout.trim();
+  return fs.existsSync(path.join(root, MULTI_COMMIT_CONFIG));
+}
+
+function multiCommit() {
+  const notInstalled = 'git-multi-commit is not installed. Install it with: npm install -g git-multi-commit';
+  // npm installs global CLIs as .cmd shims on Windows, which only start
+  // through a shell. No arguments are passed, so no user input reaches it.
+  // cmd.exe's "not found" exit code isn't reliable, so look it up first.
+  const isWindows = process.platform === 'win32';
+  if (isWindows && run('where', ['git-multi-commit'], { quiet: true }).status !== 0) fail(notInstalled);
+
+  console.log(cyan('› git-multi-commit'));
+  const result = run('git-multi-commit', [], { shell: isWindows });
+  if (result.error) fail(result.error.code === 'ENOENT' ? notInstalled : result.error.message);
+  if (result.status !== 0) fail(`"git-multi-commit" failed (exit code ${result.status}).`);
+}
+
 // ---------- main ----------
 function main() {
   const { remote, branch, message } = parseArgs(process.argv.slice(2));
@@ -247,9 +281,16 @@ function main() {
     fail('Not inside a git repository.');
   }
 
-  const remoteUrl = git(['remote', 'get-url', remote], { quiet: true });
-  if (remoteUrl.status !== 0) {
-    fail(`Remote "${remote}" does not exist. Add it with: git remote add ${remote} <url>`);
+  const multi = usesMultiCommit();
+  let remoteUrl;
+  if (multi) {
+    console.log(cyan(`• Found ${MULTI_COMMIT_CONFIG}, pushing with git-multi-commit instead of git push.`));
+    if (remote !== 'origin' || branch !== 'main') console.log(yellow('⚠ -u and -b are ignored for git-multi-commit.'));
+  } else {
+    remoteUrl = git(['remote', 'get-url', remote], { quiet: true });
+    if (remoteUrl.status !== 0) {
+      fail(`Remote "${remote}" does not exist. Add it with: git remote add ${remote} <url>`);
+    }
   }
 
   step(['add', '.']);
@@ -259,6 +300,12 @@ function main() {
     console.log(yellow('• Nothing new to commit, pushing existing commits.'));
   } else {
     step(['commit', '-m', message || randomMessage()]);
+  }
+
+  if (multi) {
+    multiCommit();
+    console.log(green('✔ Pushed with git-multi-commit'));
+    return;
   }
 
   const auth = githubAuth(remoteUrl.stdout.trim()) || {};

@@ -62,6 +62,18 @@ gh auth login   # run again for the second account
 
 `acp` switches gh's active account to whichever one it used, so "last used" is always the most recent one. The token is only used for that one push and doesn't replace your saved git login. SSH remotes and non-GitHub remotes use your normal git login.
 
+## git-multi-commit projects
+
+If your repo root contains a `.git-multi-commit.json` file (created by [`git-multi-commit --config`](https://www.npmjs.com/package/git-multi-commit)), `acp` still runs `git add .` and `git commit` locally, but then runs `git-multi-commit` instead of `git push`:
+
+```bash
+git add .
+git commit -m "<one of 25 random messages>"
+git-multi-commit
+```
+
+No `origin` remote is needed in this case, and `-u` / `-b` are ignored. Install it with `npm install -g git-multi-commit`.
+
 ## Notes
 
 - If there is nothing new to commit, `acp` skips the commit and still pushes, so any commits you made earlier get sent.

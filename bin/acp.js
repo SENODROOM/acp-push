@@ -23,7 +23,7 @@ Usage: acp [options]
 
 Options:
   -u, --upstream          Push to origin, then open a pull request to "upstream"
-  -ua, --upstream-merge   Same as -u, then merge the pull request
+  -ua, --upstream-merge   Same as -u, then merge it if you have write access
   -b, --branch <name>     Push to <name> instead of "main"
   -m, --message <text>    Use your own commit message instead of a random one
   -h, --help              Show this help
@@ -38,6 +38,8 @@ Pull requests:
   -u and -ua need the GitHub CLI (gh) and a remote called "upstream". The
   pull request goes from <branch> on origin (your fork) to the default
   branch of upstream. If one is already open, the push just updates it.
+  -ua only merges if your account can write to upstream (write, maintain
+  or admin role). Otherwise the pull request is left open.
 
 git-multi-commit:
   If the repo root has a .git-multi-commit.json file, acp still adds and
@@ -47,7 +49,7 @@ git-multi-commit:
 Examples:
   acp                      ${dim('# push to origin/main')}
   acp -u                   ${dim('# push to origin/main, open a PR to upstream')}
-  acp -ua                  ${dim('# same, then merge the PR')}
+  acp -ua                  ${dim('# same, then merge the PR if you can')}
   acp -b dev               ${dim('# push to origin/dev')}
   acp -u --branch fix      ${dim('# push to origin/fix, open a PR to upstream')}
   acp -m "Fix login bug"   ${dim('# custom message, push to origin/main')}
@@ -284,6 +286,17 @@ function pullRequestTarget(originUrl) {
   return { repo: `${base.owner}/${base.name}`, baseOwner: base.owner, headOwner: head.owner };
 }
 
+// True when the gh account behind `env` has write access to `repo`
+// (the write, maintain or admin role), which is what merging needs.
+function canPush(repo, env) {
+  const result = run('gh', ['api', `repos/${repo}`], { quiet: true, env });
+  try {
+    return JSON.parse(result.stdout).permissions.push === true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -325,13 +338,25 @@ function pullRequest(target, branch, merge) {
   }
   if (!merge) return;
 
-  // The fork's owner often can't merge into upstream, so prefer the gh
-  // account that owns upstream when there is one.
-  const merger = accountFor(target.baseOwner) || opener;
+  // Only merge with write access to upstream (write, maintain or admin).
+  // The fork's owner often doesn't have it, so the gh account that owns
+  // upstream is tried first when there is one.
+  const owner = accountFor(target.baseOwner);
+  let merger = owner || opener;
+  let env = envFor(merger);
+  let allowed = canPush(target.repo, env);
+  if (!allowed && merger !== opener) {
+    merger = opener;
+    env = envFor(merger);
+    allowed = canPush(target.repo, env);
+  }
+  if (!allowed) {
+    console.log(yellow(`• No write access to ${target.repo}, so the pull request stays open for a maintainer to merge.`));
+    return;
+  }
   if (merger && merger !== opener) {
     console.log(cyan(`• Merging with GitHub account "${merger}" (owner of upstream)`));
   }
-  const env = envFor(merger);
 
   console.log(cyan(`› gh pr merge ${url} --merge`));
   let merged;

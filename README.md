@@ -27,7 +27,7 @@ npm install -g acp-push
 | Flag | Description |
 | --- | --- |
 | `-u`, `--upstream` | Push to `origin`, then open a pull request to `upstream` |
-| `-ua`, `--upstream-merge` | Same as `-u`, then merge the pull request |
+| `-ua`, `--upstream-merge` | Same as `-u`, then merge the pull request if you have write access to `upstream` |
 | `-b`, `--branch <name>` | Push to `<name>` instead of `main` |
 | `-m`, `--message <text>` | Use your own commit message instead of a random one |
 | `-h`, `--help` | Show help |
@@ -38,7 +38,7 @@ npm install -g acp-push
 ```bash
 acp                      # git push origin main
 acp -u                   # git push origin main, then open a PR to upstream
-acp -ua                  # same, then merge the PR
+acp -ua                  # same, then merge the PR if you have write access
 acp -b dev               # git push origin dev
 acp --branch=dev         # same as above
 acp -u -b fix            # git push origin fix, then open a PR to upstream
@@ -56,12 +56,12 @@ git push origin HEAD:main
 gh pr create --repo <upstream owner>/<repo> --head <your account>:main
 ```
 
-`acp -ua` does the same and then merges it with `gh pr merge --merge`.
+`acp -ua` does the same and then merges it with `gh pr merge --merge`, but only if your account has write access to `upstream` (the write, maintain or admin role). Without it, the pull request is left open for a maintainer and `acp` still finishes successfully.
 
 - You need the [GitHub CLI](https://cli.github.com) (`gh`) and a remote called `upstream`. Add one with `git remote add upstream <url>`. Both remotes must be GitHub repos.
 - The pull request goes into the default branch of `upstream`. Its title is your last commit message.
 - If a pull request from that branch is already open, the push updates it and `acp` doesn't open a second one. `-ua` merges the open one.
-- Merging needs write access to `upstream`. If you're logged in to `gh` as the owner of `upstream`, `acp` merges with that account. Otherwise it uses the same account that opened the pull request.
+- For the merge, `acp` checks two `gh` accounts for write access: the one named like the owner of `upstream` (if you're logged in to it), then the one that opened the pull request. It merges with the first that has it.
 - If the merge fails, the pull request stays open and `acp` prints its link.
 
 ## Multiple GitHub accounts

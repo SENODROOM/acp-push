@@ -26,7 +26,8 @@ npm install -g acp-push
 
 | Flag | Description |
 | --- | --- |
-| `-u`, `--upstream` | Push to the `upstream` remote instead of `origin` |
+| `-u`, `--upstream` | Push to `origin`, then open a pull request to `upstream` |
+| `-ua`, `--upstream-merge` | Same as `-u`, then merge the pull request |
 | `-b`, `--branch <name>` | Push to `<name>` instead of `main` |
 | `-m`, `--message <text>` | Use your own commit message instead of a random one |
 | `-h`, `--help` | Show help |
@@ -36,12 +37,32 @@ npm install -g acp-push
 
 ```bash
 acp                      # git push origin main
-acp -u                   # git push upstream main
+acp -u                   # git push origin main, then open a PR to upstream
+acp -ua                  # same, then merge the PR
 acp -b dev               # git push origin dev
 acp --branch=dev         # same as above
-acp -u -b staging        # git push upstream staging
+acp -u -b fix            # git push origin fix, then open a PR to upstream
 acp -m "Fix login bug"   # custom message
 ```
+
+## Pull requests to upstream
+
+If `origin` is your fork and `upstream` is the original repo, `acp -u` pushes to your fork and opens a pull request:
+
+```bash
+git add .
+git commit -m "<one of 25 random messages>"
+git push origin HEAD:main
+gh pr create --repo <upstream owner>/<repo> --head <your account>:main
+```
+
+`acp -ua` does the same and then merges it with `gh pr merge --merge`.
+
+- You need the [GitHub CLI](https://cli.github.com) (`gh`) and a remote called `upstream`. Add one with `git remote add upstream <url>`. Both remotes must be GitHub repos.
+- The pull request goes into the default branch of `upstream`. Its title is your last commit message.
+- If a pull request from that branch is already open, the push updates it and `acp` doesn't open a second one. `-ua` merges the open one.
+- Merging needs write access to `upstream`. If you're logged in to `gh` as the owner of `upstream`, `acp` merges with that account. Otherwise it uses the same account that opened the pull request.
+- If the merge fails, the pull request stays open and `acp` prints its link.
 
 ## Multiple GitHub accounts
 
@@ -72,13 +93,12 @@ git commit -m "<one of 25 random messages>"
 git-multi-commit
 ```
 
-No `origin` remote is needed in this case, and `-u` / `-b` are ignored. Install it with `npm install -g git-multi-commit`.
+No `origin` remote is needed in this case, and `-u` / `-ua` / `-b` are ignored. Install it with `npm install -g git-multi-commit`.
 
 ## Notes
 
 - If there is nothing new to commit, `acp` skips the commit and still pushes, so any commits you made earlier get sent.
 - `-b <name>` pushes your current local branch to `<name>` on the remote, creating it there if it doesn't exist yet.
-- `-u` needs a remote called `upstream`. Add one with `git remote add upstream <url>`.
 
 ## Custom messages
 

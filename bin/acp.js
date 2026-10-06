@@ -22,7 +22,8 @@ ${cyan('acp')} — git add, commit and push in one go
 Usage: acp [options]
 
 Options:
-  -u, --upstream          Push to the "upstream" remote instead of "origin"
+  -u, --upstream          Push to origin, then open a pull request to "upstream"
+  -ua, --upstream-merge   Same as -u, then merge the pull request
   -b, --branch <name>     Push to <name> instead of "main"
   -m, --message <text>    Use your own commit message instead of a random one
   -h, --help              Show this help
@@ -33,16 +34,22 @@ GitHub accounts:
   the repo owner (github.com/<owner>/...). If none matches, it uses the
   account you used last. Log in to each account once with: gh auth login
 
+Pull requests:
+  -u and -ua need the GitHub CLI (gh) and a remote called "upstream". The
+  pull request goes from <branch> on origin (your fork) to the default
+  branch of upstream. If one is already open, the push just updates it.
+
 git-multi-commit:
   If the repo root has a .git-multi-commit.json file, acp still adds and
   commits locally, then runs git-multi-commit instead of git push.
-  -u and -b are ignored in that case.
+  -u, -ua and -b are ignored in that case.
 
 Examples:
   acp                      ${dim('# push to origin/main')}
-  acp -u                   ${dim('# push to upstream/main')}
+  acp -u                   ${dim('# push to origin/main, open a PR to upstream')}
+  acp -ua                  ${dim('# same, then merge the PR')}
   acp -b dev               ${dim('# push to origin/dev')}
-  acp -u --branch staging  ${dim('# push to upstream/staging')}
+  acp -u --branch fix      ${dim('# push to origin/fix, open a PR to upstream')}
   acp -m "Fix login bug"   ${dim('# custom message, push to origin/main')}
 `;
 
@@ -53,7 +60,7 @@ function fail(message) {
 
 // ---------- argument parsing ----------
 function parseArgs(argv) {
-  const options = { remote: 'origin', branch: 'main', message: null };
+  const options = { branch: 'main', message: null, pr: false, merge: false };
 
   for (let i = 0; i < argv.length; i++) {
     let flag = argv[i];
@@ -79,7 +86,12 @@ function parseArgs(argv) {
     switch (flag) {
       case '-u':
       case '--upstream':
-        options.remote = 'upstream';
+        options.pr = true;
+        break;
+      case '-ua':
+      case '--upstream-merge':
+        options.pr = true;
+        options.merge = true;
         break;
       case '-b':
       case '--branch':
@@ -151,9 +163,12 @@ function randomMessage() {
 }
 
 // ---------- GitHub account picking (via gh CLI) ----------
-function githubOwner(url) {
-  const match = url.match(/^https?:\/\/(?:[^@/]+@)?github\.com\/([^/]+)\//i);
-  return match ? match[1] : null;
+// Returns { owner, name } for a GitHub remote URL (HTTPS or SSH), or null.
+function githubRepo(url) {
+  const match = url.match(
+    /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([^/]+)\/([^/]+?)(?:\.git)?\/?$/i
+  );
+  return match ? { owner: match[1], name: match[2] } : null;
 }
 
 // Returns { accounts: [...logins], active: login } or null.
@@ -202,8 +217,9 @@ function githubAuth(remoteUrl) {
     return null;
   }
 
-  const owner = githubOwner(remoteUrl);
-  if (!owner) return null; // not a GitHub https remote
+  const repo = githubRepo(remoteUrl);
+  if (!repo) return null; // not a GitHub https remote
+  const owner = repo.owner;
 
   const gh = ghAccounts();
   if (!gh) {
@@ -248,6 +264,91 @@ function githubAuth(remoteUrl) {
   };
 }
 
+// ---------- pull requests (via gh CLI) ----------
+// Checks everything -u needs before anything is committed. Returns the
+// upstream repo ("owner/name") plus the owners of upstream and the fork.
+function pullRequestTarget(originUrl) {
+  const upstreamUrl = git(['remote', 'get-url', 'upstream'], { quiet: true });
+  if (upstreamUrl.status !== 0) {
+    fail('Remote "upstream" does not exist. Add it with: git remote add upstream <url>');
+  }
+
+  const head = githubRepo(originUrl);
+  const base = githubRepo(upstreamUrl.stdout.trim());
+  if (!head || !base) fail('Pull requests need "origin" and "upstream" to both be GitHub repos.');
+
+  if (run('gh', ['--version'], { quiet: true }).status !== 0) {
+    fail('Pull requests need the GitHub CLI (gh). Install it from https://cli.github.com');
+  }
+
+  return { repo: `${base.owner}/${base.name}`, baseOwner: base.owner, headOwner: head.owner };
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Opens a pull request from <branch> on the fork to upstream's default
+// branch, and merges it when `merge` is set.
+function pullRequest(target, branch, merge) {
+  const gh = ghAccounts();
+  const accountFor = (owner) => gh && gh.accounts.find((a) => a.toLowerCase() === owner.toLowerCase());
+  // GH_TOKEN makes gh act as that account. Without it gh uses its active one.
+  const envFor = (login) => {
+    const token = login && ghToken(login, login === gh.active);
+    return token ? { GH_TOKEN: token } : undefined;
+  };
+
+  const opener = accountFor(target.headOwner);
+  const head = `${target.headOwner}:${branch}`;
+  const title = git(['log', '-1', '--pretty=%s'], { quiet: true }).stdout.trim();
+
+  console.log(cyan(`› gh pr create --repo ${target.repo} --head ${head}`));
+  const created = run(
+    'gh',
+    ['pr', 'create', '--repo', target.repo, '--head', head, '--title', title, '--body', ''],
+    { quiet: true, env: envFor(opener) }
+  );
+  // gh prints the new PR's URL, or the open one's when it already exists.
+  const output = `${created.stdout || ''}\n${created.stderr || ''}`;
+  const found = output.match(/https:\/\/github\.com\/\S+\/pull\/\d+/);
+  if (!found || (created.status !== 0 && !/already exists/i.test(output))) {
+    if (created.stderr) process.stderr.write(created.stderr);
+    fail(`"gh pr create" failed (exit code ${created.status}).`);
+  }
+
+  const url = found[0];
+  if (created.status === 0) {
+    console.log(green(`✔ Pull request opened: ${url}`));
+  } else {
+    console.log(yellow(`• Pull request already open, updated by this push: ${url}`));
+  }
+  if (!merge) return;
+
+  // The fork's owner often can't merge into upstream, so prefer the gh
+  // account that owns upstream when there is one.
+  const merger = accountFor(target.baseOwner) || opener;
+  if (merger && merger !== opener) {
+    console.log(cyan(`• Merging with GitHub account "${merger}" (owner of upstream)`));
+  }
+  const env = envFor(merger);
+
+  console.log(cyan(`› gh pr merge ${url} --merge`));
+  let merged;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    merged = run('gh', ['pr', 'merge', url, '--merge'], { quiet: true, env });
+    // GitHub needs a moment to work out whether a brand new PR can be merged.
+    if (merged.status === 0 || !/GraphQL: .*not mergeable/i.test(merged.stderr || '')) break;
+    if (attempt < 3) sleep(2000);
+  }
+  if (merged.status !== 0) {
+    if (merged.stderr) process.stderr.write(merged.stderr);
+    console.error(yellow(`⚠ The pull request is still open: ${url}`));
+    fail(`"gh pr merge" failed (exit code ${merged.status}).`);
+  }
+  console.log(green(`✔ Merged into ${target.repo}`));
+}
+
 // ---------- git-multi-commit ----------
 // Projects set up with git-multi-commit keep this file in the repo root
 // (the same place git-multi-commit looks for it). For those, acp runs
@@ -275,7 +376,8 @@ function multiCommit() {
 
 // ---------- main ----------
 function main() {
-  const { remote, branch, message } = parseArgs(process.argv.slice(2));
+  const { branch, message, pr, merge } = parseArgs(process.argv.slice(2));
+  const remote = 'origin';
 
   if (git(['rev-parse', '--is-inside-work-tree'], { quiet: true }).status !== 0) {
     fail('Not inside a git repository.');
@@ -283,14 +385,16 @@ function main() {
 
   const multi = usesMultiCommit();
   let remoteUrl;
+  let target;
   if (multi) {
     console.log(cyan(`• Found ${MULTI_COMMIT_CONFIG}, pushing with git-multi-commit instead of git push.`));
-    if (remote !== 'origin' || branch !== 'main') console.log(yellow('⚠ -u and -b are ignored for git-multi-commit.'));
+    if (pr || branch !== 'main') console.log(yellow('⚠ -u, -ua and -b are ignored for git-multi-commit.'));
   } else {
     remoteUrl = git(['remote', 'get-url', remote], { quiet: true });
     if (remoteUrl.status !== 0) {
       fail(`Remote "${remote}" does not exist. Add it with: git remote add ${remote} <url>`);
     }
+    if (pr) target = pullRequestTarget(remoteUrl.stdout.trim());
   }
 
   step(['add', '.']);
@@ -314,6 +418,8 @@ function main() {
   // to <branch> on the remote, so the default always lands on "main".
   step(['push', remote, `HEAD:${branch}`], auth);
   console.log(green(`✔ Pushed to ${remote}/${branch}`));
+
+  if (pr) pullRequest(target, branch, merge);
 }
 
 main();

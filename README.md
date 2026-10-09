@@ -45,6 +45,7 @@ acp --branch=dev         # same as above
 acp -u -b fix            # git push origin fix, then open a PR to upstream
 acp -m "Fix login bug"   # custom message
 acp -c                   # 10 smaller commits, then push
+acp -c -ua               # 10 commits, each pushed with its own PR, merged right away
 ```
 
 ## Pull requests to upstream

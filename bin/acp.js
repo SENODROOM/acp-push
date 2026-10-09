@@ -26,7 +26,8 @@ Options:
   -ua, --upstream-merge   Same as -u, then merge it if you have write access
   -b, --branch <name>     Push to <name> instead of "main"
   -m, --message <text>    Use your own commit message instead of a random one
-  -c, --chunks            Split your changes into 10 smaller commits
+  -c, --chunks            Split your changes into 10 smaller commits. With -u or
+                          -ua, each commit is pushed with its own pull request
   -h, --help              Show this help
   -v, --version           Show the version
 
@@ -54,7 +55,8 @@ Examples:
   acp -b dev               ${dim('# push to origin/dev')}
   acp -u --branch fix      ${dim('# push to origin/fix, open a PR to upstream')}
   acp -m "Fix login bug"   ${dim('# custom message, push to origin/main')}
-  acp -c                   ${dim('# commit in up to 10 chunks, then push')}
+  acp -c                   ${dim('# commit in 10 chunks, then push')}
+  acp -c -ua               ${dim('# each chunk: push, open a PR, merge it')}
 `;
 
 function fail(message) {
@@ -209,8 +211,8 @@ function stage(unit) {
 
 // Commits the changes as MAX_CHUNKS commits (fewer if there are fewer separate
 // changes), splitting the individual changes (hunks) as evenly as possible,
-// even within one file. Returns false when there was nothing to commit.
-function commitInChunks(message) {
+// even within one file. afterCommit runs after each commit. Returns false when there was nothing to commit.
+function commitInChunks(message, afterCommit) {
   // Start from a clean index so each commit holds only its own chunk.
   git(['reset', '-q'], { quiet: true });
 
@@ -235,6 +237,7 @@ function commitInChunks(message) {
       text = pool.length ? pool.splice(Math.floor(Math.random() * pool.length), 1)[0] : randomMessage();
     }
     step(['commit', '-m', text]);
+    if (afterCommit) afterCommit(i + 1, count);
   }
   return true;
 }
@@ -499,8 +502,30 @@ function main() {
 
   if (multi && chunks) console.log(yellow('⚠ -c is ignored for git-multi-commit.'));
 
+  const auth = multi ? null : githubAuth(remoteUrl.stdout.trim()) || {};
+
+  // "HEAD:<branch>" pushes whatever branch you're on (main, master, anything)
+  // to <branch> on the remote, so the default always lands on "main".
+  const push = () => {
+    step(['push', remote, `HEAD:${branch}`], auth);
+    console.log(green(`✔ Pushed to ${remote}/${branch}`));
+  };
+
+  // With -c and -u/-ua, every chunk is pushed and gets its own pull request
+  // (merged right away with -ua), instead of one push at the end.
+  let pushedPerChunk = false;
+
   if (chunks && !multi) {
-    if (!commitInChunks(message)) console.log(yellow('• Nothing new to commit, pushing existing commits.'));
+    const afterCommit = pr
+      ? (n, count) => {
+          console.log(cyan(`• Chunk ${n}/${count}`));
+          push();
+          pullRequest(target, branch, merge);
+        }
+      : undefined;
+    const done = commitInChunks(message, afterCommit);
+    pushedPerChunk = done && pr;
+    if (!done) console.log(yellow('• Nothing new to commit, pushing existing commits.'));
   } else {
     step(['add', '.']);
 
@@ -518,13 +543,9 @@ function main() {
     return;
   }
 
-  const auth = githubAuth(remoteUrl.stdout.trim()) || {};
+  if (pushedPerChunk) return;
 
-  // "HEAD:<branch>" pushes whatever branch you're on (main, master, anything)
-  // to <branch> on the remote, so the default always lands on "main".
-  step(['push', remote, `HEAD:${branch}`], auth);
-  console.log(green(`✔ Pushed to ${remote}/${branch}`));
-
+  push();
   if (pr) pullRequest(target, branch, merge);
 }
 

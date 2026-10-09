@@ -26,6 +26,7 @@ Options:
   -ua, --upstream-merge   Same as -u, then merge it if you have write access
   -b, --branch <name>     Push to <name> instead of "main"
   -m, --message <text>    Use your own commit message instead of a random one
+  -c, --chunks            Split your changes into 10 smaller commits
   -h, --help              Show this help
   -v, --version           Show the version
 
@@ -53,6 +54,7 @@ Examples:
   acp -b dev               ${dim('# push to origin/dev')}
   acp -u --branch fix      ${dim('# push to origin/fix, open a PR to upstream')}
   acp -m "Fix login bug"   ${dim('# custom message, push to origin/main')}
+  acp -c                   ${dim('# commit in up to 10 chunks, then push')}
 `;
 
 function fail(message) {
@@ -62,7 +64,7 @@ function fail(message) {
 
 // ---------- argument parsing ----------
 function parseArgs(argv) {
-  const options = { branch: 'main', message: null, pr: false, merge: false };
+  const options = { branch: 'main', message: null, pr: false, merge: false, chunks: false };
 
   for (let i = 0; i < argv.length; i++) {
     let flag = argv[i];
@@ -102,6 +104,10 @@ function parseArgs(argv) {
       case '-m':
       case '--message':
         options.message = takeValue();
+        break;
+      case '-c':
+      case '--chunks':
+        options.chunks = true;
         break;
       case '-h':
       case '--help':
@@ -162,6 +168,75 @@ function step(args, { extraArgs = [], env, hint } = {}) {
 
 function randomMessage() {
   return messages[Math.floor(Math.random() * messages.length)];
+}
+
+// ---------- chunked commits ----------
+const MAX_CHUNKS = 10;
+
+// The changes that are still uncommitted, as a list of units: each hunk of
+// a tracked file's diff, any change without hunks (binary, mode change), and
+// each untracked file as a whole. Units of one file stay in file order.
+function changeUnits() {
+  const diff = git(['diff', '--no-color', '--no-renames', '--binary', '-U0'], { quiet: true }).stdout;
+  const units = [];
+
+  for (const section of diff.split(/^(?=diff --git )/m).filter(Boolean)) {
+    const at = section.search(/^@@ /m);
+    if (at === -1) {
+      units.push({ patch: section });
+      continue;
+    }
+    const header = section.slice(0, at);
+    for (const hunk of section.slice(at).split(/^(?=@@ )/m)) units.push({ patch: header + hunk });
+  }
+
+  const untracked = git(['ls-files', '-o', '--exclude-standard', '-z'], { quiet: true }).stdout;
+  for (const file of untracked.split('\0').filter(Boolean)) units.push({ file });
+  return units;
+}
+
+function stage(unit) {
+  if (unit.file) {
+    git(['add', '--', unit.file], { quiet: true });
+    return;
+  }
+  const result = spawnSync('git', ['apply', '--cached', '--unidiff-zero', '--binary'], {
+    input: unit.patch,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) fail(`Could not stage a change: ${(result.stderr || '').trim()}`);
+}
+
+// Commits the changes as MAX_CHUNKS commits (fewer if there are fewer separate
+// changes), splitting the individual changes (hunks) as evenly as possible,
+// even within one file. Returns false when there was nothing to commit.
+function commitInChunks(message) {
+  // Start from a clean index so each commit holds only its own chunk.
+  git(['reset', '-q'], { quiet: true });
+
+  const total = changeUnits().length;
+  if (!total) return false;
+
+  const count = Math.min(MAX_CHUNKS, total);
+  console.log(cyan(`• Splitting ${total} change(s) into ${count} commit(s)`));
+
+  const pool = [...messages];
+  for (let i = 0; i < count; i++) {
+    // The diff is read again after every commit, so line numbers stay right.
+    const units = changeUnits();
+    const take = Math.ceil(units.length / (count - i));
+    units.slice(0, take).forEach(stage);
+
+    let text;
+    if (message) {
+      text = `${message} (${i + 1}/${count})`;
+    } else {
+      // Draw without repeats so the log doesn't show the same message twice.
+      text = pool.length ? pool.splice(Math.floor(Math.random() * pool.length), 1)[0] : randomMessage();
+    }
+    step(['commit', '-m', text]);
+  }
+  return true;
 }
 
 // ---------- GitHub account picking (via gh CLI) ----------
@@ -401,7 +476,7 @@ function multiCommit() {
 
 // ---------- main ----------
 function main() {
-  const { branch, message, pr, merge } = parseArgs(process.argv.slice(2));
+  const { branch, message, pr, merge, chunks } = parseArgs(process.argv.slice(2));
   const remote = 'origin';
 
   if (git(['rev-parse', '--is-inside-work-tree'], { quiet: true }).status !== 0) {
@@ -422,13 +497,19 @@ function main() {
     if (pr) target = pullRequestTarget(remoteUrl.stdout.trim());
   }
 
-  step(['add', '.']);
+  if (multi && chunks) console.log(yellow('⚠ -c is ignored for git-multi-commit.'));
 
-  // "git diff --cached --quiet" exits 0 when nothing is staged.
-  if (git(['diff', '--cached', '--quiet'], { quiet: true }).status === 0) {
-    console.log(yellow('• Nothing new to commit, pushing existing commits.'));
+  if (chunks && !multi) {
+    if (!commitInChunks(message)) console.log(yellow('• Nothing new to commit, pushing existing commits.'));
   } else {
-    step(['commit', '-m', message || randomMessage()]);
+    step(['add', '.']);
+
+    // "git diff --cached --quiet" exits 0 when nothing is staged.
+    if (git(['diff', '--cached', '--quiet'], { quiet: true }).status === 0) {
+      console.log(yellow('• Nothing new to commit, pushing existing commits.'));
+    } else {
+      step(['commit', '-m', message || randomMessage()]);
+    }
   }
 
   if (multi) {

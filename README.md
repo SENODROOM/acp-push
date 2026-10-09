@@ -30,6 +30,7 @@ npm install -g acp-push
 | `-ua`, `--upstream-merge` | Same as `-u`, then merge the pull request if you have write access to `upstream` |
 | `-b`, `--branch <name>` | Push to `<name>` instead of `main` |
 | `-m`, `--message <text>` | Use your own commit message instead of a random one |
+| `-c`, `--chunks` | Split your changes into 10 smaller commits (by change, not by file), then push |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 
@@ -43,6 +44,7 @@ acp -b dev               # git push origin dev
 acp --branch=dev         # same as above
 acp -u -b fix            # git push origin fix, then open a PR to upstream
 acp -m "Fix login bug"   # custom message
+acp -c                   # 10 smaller commits, then push
 ```
 
 ## Pull requests to upstream

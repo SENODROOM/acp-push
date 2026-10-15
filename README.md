@@ -27,7 +27,7 @@ npm install -g acp-push
 | Flag | Description |
 | --- | --- |
 | `-u`, `--upstream` | Push to `origin`, then open a pull request to `upstream` |
-| `-ua`, `--upstream-merge` | Same as `-u`, then merge the pull request if you have write access to `upstream` |
+| `-ua`, `--upstream-allow` (or `--upstream-merge`) | Same as `-u`, then merge the pull request if you have write access to `upstream` |
 | `-b`, `--branch <name>` | Push to `<name>` instead of `main` |
 | `-m`, `--message <text>` | Use your own commit message instead of a random one |
 | `-c`, `--chunks` | Split your changes into 10 smaller commits (by change, not by file), then push |
@@ -67,6 +67,20 @@ gh pr create --repo <upstream owner>/<repo> --head <your account>:main
 - For the merge, `acp` checks two `gh` accounts for write access: the one named like the owner of `upstream` (if you're logged in to it), then the one that opened the pull request. It merges with the first that has it.
 - If the merge fails, the pull request stays open and `acp` prints its link.
 
+### No `origin`, only `upstream`
+
+If the repo has an `upstream` remote but no `origin`, `acp -u` / `acp -ua` push a branch straight to `upstream`, open a pull request from it into `upstream`'s default branch, and (with `-ua`) merge it:
+
+```bash
+git push upstream HEAD:<branch>
+gh pr create --repo <upstream owner>/<repo> --head <upstream owner>:<branch>
+gh pr merge <pr> --merge
+```
+
+- `<branch>` is `-b <name>` if you gave one, otherwise the branch you are on. On `upstream`'s default branch (a pull request can't go from a branch into itself) `acp` creates a new `acp-<date>` branch instead.
+- Of your logged-in `gh` accounts, `acp` uses one that can push to `upstream` (the owner's account first) for the push, the pull request and the merge.
+- The branch is not deleted after the merge.
+
 ## Multiple GitHub accounts
 
 If you have the [GitHub CLI](https://cli.github.com) (`gh`) installed, `acp` picks the right account for each repo automatically:
@@ -96,7 +110,7 @@ git commit -m "<one of 25 random messages>"
 git-multi-commit
 ```
 
-No `origin` remote is needed in this case. With `-u` / `-ua`, `acp` checks for the `origin` and `upstream` remotes: if both exist, it also pushes the branch to `origin` and opens (and with `-ua`, merges) the pull request after `git-multi-commit` finishes. If either is missing, it prints a warning and skips that part. `-b` only applies when the pull request step runs. Install it with `npm install -g git-multi-commit`.
+No `origin` remote is needed in this case. With `-u` / `-ua`, `acp` looks for an `upstream` remote: if it exists, it also pushes the branch (to `origin`, or straight to `upstream` when there is no `origin`) and opens (and with `-ua`, merges) the pull request after `git-multi-commit` finishes. If `upstream` is missing, it prints a warning and skips that part. `-b` only applies when the pull request step runs. Install it with `npm install -g git-multi-commit`.
 
 ## Notes
 

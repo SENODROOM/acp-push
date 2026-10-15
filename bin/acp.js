@@ -46,7 +46,10 @@ Pull requests:
 git-multi-commit:
   If the repo root has a .git-multi-commit.json file, acp still adds and
   commits locally, then runs git-multi-commit instead of git push.
-  -u, -ua and -b are ignored in that case.
+  With -u or -ua, acp checks for the "origin" and "upstream" remotes. If
+  both exist, it also pushes <branch> to origin and opens (and with -ua
+  merges) the pull request. If one is missing, it warns and skips that
+  part. -b only applies when the pull request step runs.
 
 Examples:
   acp                      ${dim('# push to origin/main')}
@@ -491,7 +494,21 @@ function main() {
   let target;
   if (multi) {
     console.log(cyan(`• Found ${MULTI_COMMIT_CONFIG}, pushing with git-multi-commit instead of git push.`));
-    if (pr || branch !== 'main') console.log(yellow('⚠ -u, -ua and -b are ignored for git-multi-commit.'));
+    if (pr) {
+      // git-multi-commit pushes to its own repos, so -u/-ua only apply when
+      // both "origin" and "upstream" exist. Check instead of skipping blindly.
+      const hasOrigin = git(['remote', 'get-url', remote], { quiet: true });
+      const hasUpstream = git(['remote', 'get-url', 'upstream'], { quiet: true });
+      if (hasOrigin.status === 0 && hasUpstream.status === 0) {
+        remoteUrl = hasOrigin;
+        target = pullRequestTarget(remoteUrl.stdout.trim());
+        console.log(cyan(`• Found remote "upstream", will also push ${branch} to ${remote} and open a pull request.`));
+      } else {
+        const missing = hasUpstream.status !== 0 ? 'upstream' : remote;
+        console.log(yellow(`⚠ Remote "${missing}" does not exist, skipping -u/-ua (git-multi-commit only).`));
+      }
+    }
+    if (!target && branch !== 'main') console.log(yellow('⚠ -b is ignored for git-multi-commit.'));
   } else {
     remoteUrl = git(['remote', 'get-url', remote], { quiet: true });
     if (remoteUrl.status !== 0) {
@@ -502,7 +519,7 @@ function main() {
 
   if (multi && chunks) console.log(yellow('⚠ -c is ignored for git-multi-commit.'));
 
-  const auth = multi ? null : githubAuth(remoteUrl.stdout.trim()) || {};
+  const auth = remoteUrl ? githubAuth(remoteUrl.stdout.trim()) || {} : null;
 
   // "HEAD:<branch>" pushes whatever branch you're on (main, master, anything)
   // to <branch> on the remote, so the default always lands on "main".
@@ -540,6 +557,10 @@ function main() {
   if (multi) {
     multiCommit();
     console.log(green('✔ Pushed with git-multi-commit'));
+    if (target) {
+      push();
+      pullRequest(target, branch, merge);
+    }
     return;
   }
 

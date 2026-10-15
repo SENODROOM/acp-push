@@ -96,7 +96,7 @@ git commit -m "<one of 25 random messages>"
 git-multi-commit
 ```
 
-No `origin` remote is needed in this case, and `-u` / `-ua` / `-b` are ignored. Install it with `npm install -g git-multi-commit`.
+No `origin` remote is needed in this case. With `-u` / `-ua`, `acp` checks for the `origin` and `upstream` remotes: if both exist, it also pushes the branch to `origin` and opens (and with `-ua`, merges) the pull request after `git-multi-commit` finishes. If either is missing, it prints a warning and skips that part. `-b` only applies when the pull request step runs. Install it with `npm install -g git-multi-commit`.
 
 ## Notes
 

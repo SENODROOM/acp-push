@@ -25,6 +25,9 @@ Options:
   -u, --upstream          Push to origin, then open a pull request to "upstream"
   -ua, --upstream-allow   Same as -u, then merge it if you have write access
                           (--upstream-merge works too)
+  -bpa, --branch-pr-auto  Push to a new branch on origin, open a pull request into
+                          the default branch, merge it, then delete the branch
+                          (-b <name> picks the branch name)
   -b, --branch <name>     Push to <name> instead of "main"
   -m, --message <text>    Use your own commit message instead of a random one
   -c, --chunks            Split your changes into 10 smaller commits. With -u or
@@ -47,6 +50,12 @@ Pull requests:
   and opens the pull request from there. The branch is your current one,
   -b <name>, or a new acp-<date> branch when you are on upstream's default.
 
+One repo (-bpa):
+  Needs the GitHub CLI (gh) and an "origin" remote on GitHub. The branch is
+  named acp-<date> unless you give -b <name>. The merge needs write access to
+  origin; without it the pull request stays open and the branch is kept.
+  If you are on the default branch, it is updated after the merge.
+
 git-multi-commit:
   If the repo root has a .git-multi-commit.json file, acp still adds and
   commits locally, then runs git-multi-commit instead of git push.
@@ -59,6 +68,7 @@ Examples:
   acp                      ${dim('# push to origin/main')}
   acp -u                   ${dim('# push to origin/main, open a PR to upstream')}
   acp -ua                  ${dim('# same, then merge the PR if you can')}
+  acp -bpa                 ${dim('# push a new branch, PR into main, merge, delete the branch')}
   acp -b dev               ${dim('# push to origin/dev')}
   acp -u --branch fix      ${dim('# push to origin/fix, open a PR to upstream')}
   acp -m "Fix login bug"   ${dim('# custom message, push to origin/main')}
@@ -74,7 +84,7 @@ function fail(message) {
 
 // ---------- argument parsing ----------
 function parseArgs(argv) {
-  const options = { branch: 'main', branchGiven: false, message: null, pr: false, merge: false, chunks: false };
+  const options = { branch: 'main', branchGiven: false, message: null, pr: false, merge: false, chunks: false, bpa: false };
 
   for (let i = 0; i < argv.length; i++) {
     let flag = argv[i];
@@ -105,6 +115,12 @@ function parseArgs(argv) {
       case '-ua':
       case '--upstream-allow':
       case '--upstream-merge':
+        options.pr = true;
+        options.merge = true;
+        break;
+      case '-bpa':
+      case '--branch-pr-auto':
+        options.bpa = true;
         options.pr = true;
         options.merge = true;
         break;
@@ -373,10 +389,12 @@ function githubAuth(remoteUrl, writeRepo) {
 // upstream repo ("owner/name") plus the owners of upstream and the fork.
 // With no originUrl there is no fork: the branch goes straight to upstream
 // (`direct`), so the pull request's head and base are the same repo.
-function pullRequestTarget(originUrl) {
-  const upstreamUrl = git(['remote', 'get-url', 'upstream'], { quiet: true });
+// `baseRemote` is the remote the pull request goes into ("upstream", or
+// "origin" for -bpa, where the branch and the pull request live in one repo).
+function pullRequestTarget(originUrl, baseRemote = 'upstream') {
+  const upstreamUrl = git(['remote', 'get-url', baseRemote], { quiet: true });
   if (upstreamUrl.status !== 0) {
-    fail('Remote "upstream" does not exist. Add it with: git remote add upstream <url>');
+    fail(`Remote "${baseRemote}" does not exist. Add it with: git remote add ${baseRemote} <url>`);
   }
 
   const head = originUrl ? githubRepo(originUrl) : null;
@@ -385,7 +403,7 @@ function pullRequestTarget(originUrl) {
     fail(
       originUrl
         ? 'Pull requests need "origin" and "upstream" to both be GitHub repos.'
-        : 'Pull requests need "upstream" to be a GitHub repo.'
+        : `Pull requests need "${baseRemote}" to be a GitHub repo.`
     );
   }
 
@@ -404,18 +422,24 @@ function pullRequestTarget(originUrl) {
 // The branch to push to upstream when there is no fork: -b if given, else the
 // branch you are on, else a new acp-<date> one (a pull request can't go from
 // upstream's default branch into itself).
-function directBranch(target, requested) {
+// With `fresh` (-bpa) it is always a new acp-<date> branch unless -b names one,
+// because the branch is deleted after the merge.
+// Also stores the default branch as target.base.
+function directBranch(target, requested, fresh = false) {
   const result = run('gh', ['api', `repos/${target.repo}`, '--jq', '.default_branch'], { quiet: true });
   const base = result.status === 0 ? result.stdout.trim() : '';
   if (!base) fail(`Could not read the default branch of ${target.repo} with gh. Is gh logged in?`);
+  target.base = base;
 
   if (requested) {
     if (requested === base) fail(`-b ${requested} is the default branch of ${target.repo}, a pull request needs another one.`);
     return requested;
   }
 
-  const current = git(['rev-parse', '--abbrev-ref', 'HEAD'], { quiet: true }).stdout.trim();
-  if (current && current !== 'HEAD' && current !== base) return current;
+  if (!fresh) {
+    const current = git(['rev-parse', '--abbrev-ref', 'HEAD'], { quiet: true }).stdout.trim();
+    if (current && current !== 'HEAD' && current !== base) return current;
+  }
 
   const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
   return `acp-${stamp}`;
@@ -471,7 +495,7 @@ function pullRequest(target, branch, merge) {
   } else {
     console.log(yellow(`• Pull request already open, updated by this push: ${url}`));
   }
-  if (!merge) return;
+  if (!merge) return false;
 
   // Only merge with write access to upstream (write, maintain or admin).
   // The fork's owner often doesn't have it, so the gh account that owns
@@ -487,7 +511,7 @@ function pullRequest(target, branch, merge) {
   }
   if (!allowed) {
     console.log(yellow(`• No write access to ${target.repo}, so the pull request stays open for a maintainer to merge.`));
-    return;
+    return false;
   }
   if (merger && merger !== opener) {
     console.log(cyan(`• Merging with GitHub account "${merger}" (owner of upstream)`));
@@ -507,6 +531,35 @@ function pullRequest(target, branch, merge) {
     fail(`"gh pr merge" failed (exit code ${merged.status}).`);
   }
   console.log(green(`✔ Merged into ${target.repo}`));
+  return true;
+}
+
+// -bpa, after the merge: deletes the pull request's branch on the remote and,
+// when you are on the default branch, fast-forwards it to the merged result.
+// The pull request is already merged, so problems here only warn.
+function cleanUp(remote, branch, base, auth) {
+  const extraArgs = auth.extraArgs || [];
+  const quietly = (args) => git([...extraArgs, ...args], { env: auth.env, stdio: ['inherit', 'inherit', 'pipe'] });
+
+  console.log(cyan(`› git push ${remote} --delete ${branch}`));
+  const deleted = quietly(['push', remote, '--delete', branch]);
+  if (deleted.status === 0) {
+    console.log(green(`✔ Deleted ${remote}/${branch}`));
+  } else if (/remote ref does not exist/i.test(deleted.stderr || '')) {
+    console.log(dim(`• ${remote}/${branch} was already deleted.`));
+  } else {
+    if (deleted.stderr) process.stderr.write(deleted.stderr);
+    console.log(yellow(`⚠ Could not delete ${remote}/${branch}, delete it yourself.`));
+  }
+
+  const current = git(['rev-parse', '--abbrev-ref', 'HEAD'], { quiet: true }).stdout.trim();
+  if (current !== base) return;
+
+  console.log(cyan(`› git pull --ff-only ${remote} ${base}`));
+  const pulled = quietly(['pull', '--ff-only', remote, base]);
+  if (pulled.status === 0) return;
+  if (pulled.stderr) process.stderr.write(pulled.stderr);
+  console.log(yellow(`⚠ Could not update local ${base}, run: git pull ${remote} ${base}`));
 }
 
 // ---------- git-multi-commit ----------
@@ -536,7 +589,7 @@ function multiCommit() {
 
 // ---------- main ----------
 function main() {
-  const { branch: requestedBranch, branchGiven, message, pr, merge, chunks } = parseArgs(process.argv.slice(2));
+  const { branch: requestedBranch, branchGiven, message, pr, merge, chunks, bpa } = parseArgs(process.argv.slice(2));
   let branch = requestedBranch;
   let remote = 'origin';
 
@@ -549,6 +602,7 @@ function main() {
   let remoteUrl;
   let target;
   if (multi) {
+    if (bpa) fail('-bpa does not work with git-multi-commit.');
     console.log(cyan(`• Found ${MULTI_COMMIT_CONFIG}, pushing with git-multi-commit instead of git push.`));
     if (pr) {
       // git-multi-commit pushes to its own repos, so -u/-ua only apply when
@@ -568,7 +622,7 @@ function main() {
   } else {
     remoteUrl = remoteUrlOf('origin');
     if (remoteUrl.status !== 0) {
-      const upstream = pr ? remoteUrlOf('upstream') : null;
+      const upstream = pr && !bpa ? remoteUrlOf('upstream') : null;
       if (!upstream || upstream.status !== 0) {
         fail(`Remote "${remote}" does not exist. Add it with: git remote add ${remote} <url>`);
       }
@@ -576,12 +630,18 @@ function main() {
       remote = 'upstream';
       remoteUrl = upstream;
       target = pullRequestTarget(null);
+    } else if (bpa) {
+      // One repo: the branch and the pull request both live on origin.
+      target = pullRequestTarget(null, 'origin');
     } else if (pr) {
       target = pullRequestTarget(remoteUrl.stdout.trim());
     }
   }
 
-  if (target && target.direct) branch = directBranch(target, branchGiven ? requestedBranch : null);
+  if (target && target.direct) {
+    branch = directBranch(target, branchGiven ? requestedBranch : null, bpa);
+    if (bpa) console.log(cyan(`• Using branch "${branch}"`));
+  }
 
   if (multi && chunks) console.log(yellow('⚠ -c is ignored for git-multi-commit.'));
 
@@ -596,6 +656,11 @@ function main() {
     console.log(green(`✔ Pushed to ${remote}/${branch}`));
   };
 
+  const openPullRequest = () => {
+    const merged = pullRequest(target, branch, merge);
+    if (bpa && merged) cleanUp(remote, branch, target.base, auth);
+  };
+
   // With -c and -u/-ua, every chunk is pushed and gets its own pull request
   // (merged right away with -ua), instead of one push at the end.
   let pushedPerChunk = false;
@@ -605,7 +670,7 @@ function main() {
       ? (n, count) => {
           console.log(cyan(`• Chunk ${n}/${count}`));
           push();
-          pullRequest(target, branch, merge);
+          openPullRequest();
         }
       : undefined;
     const done = commitInChunks(message, afterCommit);
@@ -627,7 +692,7 @@ function main() {
     console.log(green('✔ Pushed with git-multi-commit'));
     if (target) {
       push();
-      pullRequest(target, branch, merge);
+      openPullRequest();
     }
     return;
   }
@@ -635,7 +700,7 @@ function main() {
   if (pushedPerChunk) return;
 
   push();
-  if (pr) pullRequest(target, branch, merge);
+  if (pr) openPullRequest();
 }
 
 main();

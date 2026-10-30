@@ -1,6 +1,6 @@
 {
   "name": "acp-push",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "git add, commit (with a random message) and push in one command: acp",
   "bin": {
     "acp": "bin/acp.js"

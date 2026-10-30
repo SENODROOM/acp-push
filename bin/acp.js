@@ -63,6 +63,8 @@ git-multi-commit:
   origin, or straight to upstream when there is no origin) and opens (and
   with -ua merges) the pull request. Without "upstream" it warns and skips
   that part. -b only applies when the pull request step runs.
+  With -bpa, every repo in the config gets its own branch, pull request into
+  its default branch, merge and branch delete. -b <name> works here too.
 
 Examples:
   acp                      ${dim('# push to origin/main')}
@@ -426,7 +428,7 @@ function pullRequestTarget(originUrl, baseRemote = 'upstream') {
 // because the branch is deleted after the merge.
 // Also stores the default branch as target.base.
 function directBranch(target, requested, fresh = false) {
-  const result = run('gh', ['api', `repos/${target.repo}`, '--jq', '.default_branch'], { quiet: true });
+  const result = run('gh', ['api', `repos/${target.repo}`, '--jq', '.default_branch'], { quiet: true, env: target.env });
   const base = result.status === 0 ? result.stdout.trim() : '';
   if (!base) fail(`Could not read the default branch of ${target.repo} with gh. Is gh logged in?`);
   target.base = base;
@@ -568,23 +570,185 @@ function cleanUp(remote, branch, base, auth) {
 // git-multi-commit instead of git push.
 const MULTI_COMMIT_CONFIG = '.git-multi-commit.json';
 
-function usesMultiCommit() {
+const MULTI_COMMIT_NOT_INSTALLED = 'git-multi-commit is not installed. Install it with: npm install -g git-multi-commit';
+const isWindows = process.platform === 'win32';
+
+function multiCommitConfigPath() {
   const root = git(['rev-parse', '--show-toplevel'], { quiet: true }).stdout.trim();
-  return fs.existsSync(path.join(root, MULTI_COMMIT_CONFIG));
+  return path.join(root, MULTI_COMMIT_CONFIG);
+}
+
+function usesMultiCommit() {
+  return fs.existsSync(multiCommitConfigPath());
+}
+
+// cmd.exe's "not found" exit code isn't reliable, so look it up first.
+function requireMultiCommit() {
+  if (isWindows && run('where', ['git-multi-commit'], { quiet: true }).status !== 0) fail(MULTI_COMMIT_NOT_INSTALLED);
+}
+
+// npm installs global CLIs as .cmd shims on Windows, which only start
+// through a shell. No arguments are passed, so no user input reaches it.
+function runMultiCommit() {
+  console.log(cyan('› git-multi-commit'));
+  return run('git-multi-commit', [], { shell: isWindows });
+}
+
+// What went wrong with a git-multi-commit run, or null if nothing did.
+function multiCommitProblem(result) {
+  if (result.error) return result.error.code === 'ENOENT' ? MULTI_COMMIT_NOT_INSTALLED : result.error.message;
+  return result.status === 0 ? null : `"git-multi-commit" failed (exit code ${result.status}).`;
 }
 
 function multiCommit() {
-  const notInstalled = 'git-multi-commit is not installed. Install it with: npm install -g git-multi-commit';
-  // npm installs global CLIs as .cmd shims on Windows, which only start
-  // through a shell. No arguments are passed, so no user input reaches it.
-  // cmd.exe's "not found" exit code isn't reliable, so look it up first.
-  const isWindows = process.platform === 'win32';
-  if (isWindows && run('where', ['git-multi-commit'], { quiet: true }).status !== 0) fail(notInstalled);
+  requireMultiCommit();
+  const problem = multiCommitProblem(runMultiCommit());
+  if (problem) fail(problem);
+}
 
-  console.log(cyan('› git-multi-commit'));
-  const result = run('git-multi-commit', [], { shell: isWindows });
-  if (result.error) fail(result.error.code === 'ENOENT' ? notInstalled : result.error.message);
-  if (result.status !== 0) fail(`"git-multi-commit" failed (exit code ${result.status}).`);
+// ---------- -bpa with git-multi-commit ----------
+// Each pair is its own repo with its own history, so every one gets its own
+// branch, pull request and merge. Checks everything before anything is committed.
+function pairTargets(requested) {
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(multiCommitConfigPath(), 'utf8'));
+  } catch (error) {
+    fail(`Could not read ${MULTI_COMMIT_CONFIG}: ${error.message}`);
+  }
+  const pairs = (config && config.pairs) || [];
+  if (!pairs.length) fail(`${MULTI_COMMIT_CONFIG} has no pairs. Set them up with: git-multi-commit --config`);
+
+  const gh = ghAccounts();
+  if (!gh) fail('-bpa needs the GitHub CLI (gh), logged in. Install it from https://cli.github.com');
+
+  let branch = requested;
+  const targets = pairs.map((pair) => {
+    const repo = githubRepo(pair.repoUrl || '');
+    if (!repo) fail(`Pull requests need every pair to be a GitHub repo, "${pair.repoUrl}" is not.`);
+
+    const account = String(pair.account).toLowerCase();
+    const login = gh.accounts.find((a) => a.toLowerCase() === account);
+    const token = login && ghToken(login, login === gh.active);
+    if (!token) fail(`GitHub account "${pair.account}" is not logged in. Log in with: gh auth login`);
+
+    const target = {
+      repo: `${repo.owner}/${repo.name}`,
+      baseOwner: repo.owner,
+      headOwner: repo.owner,
+      direct: true,
+      opener: login,
+      env: { GH_TOKEN: token },
+    };
+    branch = directBranch(target, branch, true);
+    if (!canPush(target.repo, target.env)) fail(`GitHub account "${login}" can't push to ${target.repo}.`);
+
+    const tip = run('gh', ['api', `repos/${target.repo}/git/ref/heads/${target.base}`, '--jq', '.object.sha'], {
+      quiet: true,
+      env: target.env,
+    });
+    if (tip.status !== 0) fail(`Could not read ${target.base} of ${target.repo}. A pull request needs a repo with commits.`);
+    target.baseSha = tip.stdout.trim();
+    return target;
+  });
+  return { targets, branch };
+}
+
+// Creates <branch> from the default branch. Returns false when it failed.
+// A branch that already exists is used as it is, and is not ours to delete.
+function createPairBranch(target, branch) {
+  const created = run(
+    'gh',
+    ['api', '-X', 'POST', `repos/${target.repo}/git/refs`, '-f', `ref=refs/heads/${branch}`, '-f', `sha=${target.baseSha}`],
+    { quiet: true, env: target.env }
+  );
+  target.createdBranch = created.status === 0;
+  if (created.status === 0 || /already exists/i.test(created.stderr || '')) return true;
+  if (created.stderr) process.stderr.write(created.stderr);
+  return false;
+}
+
+function deletePairBranch(target, branch) {
+  console.log(cyan(`› gh api -X DELETE repos/${target.repo}/git/refs/heads/${branch}`));
+  const deleted = run('gh', ['api', '-X', 'DELETE', `repos/${target.repo}/git/refs/heads/${branch}`], {
+    quiet: true,
+    env: target.env,
+  });
+  if (deleted.status === 0) {
+    console.log(green(`✔ Deleted ${target.repo}:${branch}`));
+  } else if (/reference does not exist/i.test(deleted.stderr || '')) {
+    console.log(dim(`• ${target.repo}:${branch} was already deleted.`));
+  } else {
+    if (deleted.stderr) process.stderr.write(deleted.stderr);
+    console.log(yellow(`⚠ Could not delete ${target.repo}:${branch}, delete it yourself.`));
+  }
+}
+
+// How many commits <branch> is ahead of the default branch, or null if unknown.
+function commitsAhead(target, branch) {
+  const compared = run('gh', ['api', `repos/${target.repo}/compare/${target.base}...${branch}`, '--jq', '.ahead_by'], {
+    quiet: true,
+    env: target.env,
+  });
+  return compared.status === 0 ? Number(compared.stdout.trim()) : null;
+}
+
+// git-multi-commit has no branch option and only reads the branch from its
+// config, so the config points at <branch> just for this one run. The branch
+// has to exist first: on a missing branch git-multi-commit starts from nothing,
+// and a pull request can't be opened between unrelated histories.
+function runMultiCommitOnBranch(branch) {
+  const file = multiCommitConfigPath();
+  const original = fs.readFileSync(file, 'utf8');
+  const config = JSON.parse(original);
+  config.branch = branch;
+  config.pairs.forEach((pair) => {
+    pair.branch = branch;
+  });
+
+  // Ctrl+C must stop git-multi-commit but not acp, or the config stays changed.
+  const ignore = () => {};
+  process.on('SIGINT', ignore);
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  try {
+    return runMultiCommit();
+  } finally {
+    fs.writeFileSync(file, original);
+    process.removeListener('SIGINT', ignore);
+  }
+}
+
+function branchPrAutoPairs(targets, branch) {
+  for (const target of targets) {
+    if (createPairBranch(target, branch)) continue;
+    targets.filter((t) => t.createdBranch).forEach((t) => deletePairBranch(t, branch));
+    fail(`Could not create branch "${branch}" on ${target.repo}.`);
+  }
+
+  const result = runMultiCommitOnBranch(branch);
+
+  // 0xC000013A is how Windows reports a process stopped with Ctrl+C.
+  if (result.signal === 'SIGINT' || result.status === 130 || result.status === 0xc000013a) {
+    fail(`Interrupted, nothing was merged. Branch "${branch}" may be left on the repos.`);
+  }
+
+  // A pair with nothing new, or one that failed, has an empty branch. A failed
+  // pair doesn't stop the others, so the ones that were pushed still go through.
+  for (const target of targets) {
+    console.log(cyan(`• ${target.repo}`));
+    const ahead = commitsAhead(target, branch);
+    if (ahead === null) {
+      console.log(yellow(`⚠ Could not compare "${branch}" with ${target.base}, leaving it for you to check.`));
+    } else if (ahead === 0) {
+      console.log(dim('• No new commits, skipping the pull request.'));
+      if (target.createdBranch) deletePairBranch(target, branch);
+    } else if (pullRequest(target, branch, true)) {
+      deletePairBranch(target, branch);
+    }
+  }
+
+  const problem = multiCommitProblem(result);
+  if (problem) fail(problem);
 }
 
 // ---------- main ----------
@@ -601,10 +765,14 @@ function main() {
   const multi = usesMultiCommit();
   let remoteUrl;
   let target;
+  let pairs;
   if (multi) {
-    if (bpa) fail('-bpa does not work with git-multi-commit.');
     console.log(cyan(`• Found ${MULTI_COMMIT_CONFIG}, pushing with git-multi-commit instead of git push.`));
-    if (pr) {
+    if (bpa) {
+      requireMultiCommit();
+      ({ targets: pairs, branch } = pairTargets(branchGiven ? requestedBranch : null));
+      console.log(cyan(`• Using branch "${branch}" on ${pairs.length} repo(s)`));
+    } else if (pr) {
       // git-multi-commit pushes to its own repos, so -u/-ua only apply when
       // "upstream" exists. Without "origin" the branch goes straight to it.
       const hasOrigin = remoteUrlOf('origin');
@@ -618,7 +786,7 @@ function main() {
         console.log(yellow('⚠ Remote "upstream" does not exist, skipping -u/-ua (git-multi-commit only).'));
       }
     }
-    if (!target && branch !== 'main') console.log(yellow('⚠ -b is ignored for git-multi-commit.'));
+    if (!target && !bpa && branch !== 'main') console.log(yellow('⚠ -b is ignored for git-multi-commit.'));
   } else {
     remoteUrl = remoteUrlOf('origin');
     if (remoteUrl.status !== 0) {
@@ -685,6 +853,11 @@ function main() {
     } else {
       step(['commit', '-m', message || randomMessage()]);
     }
+  }
+
+  if (pairs) {
+    branchPrAutoPairs(pairs, branch);
+    return;
   }
 
   if (multi) {

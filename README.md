@@ -102,7 +102,7 @@ git pull --ff-only origin <default branch>   # only if you are on the default br
 - The pull request goes into the default branch of `origin`. Its title is your last commit message.
 - If your account can't merge (no write access), the pull request stays open and the branch is **not** deleted.
 - If the branch was already deleted (for example by the repo's "automatically delete head branches" setting), `acp` just says so.
-- Works with `-c` (each chunk gets its own branch round trip). Not supported with git-multi-commit projects.
+- Works with `-c` (each chunk gets its own branch round trip). With git-multi-commit projects, see [below](#git-multi-commit-projects).
 
 ## Multiple GitHub accounts
 
@@ -134,6 +134,25 @@ git-multi-commit
 ```
 
 No `origin` remote is needed in this case. With `-u` / `-ua`, `acp` looks for an `upstream` remote: if it exists, it also pushes the branch (to `origin`, or straight to `upstream` when there is no `origin`) and opens (and with `-ua`, merges) the pull request after `git-multi-commit` finishes. If `upstream` is missing, it prints a warning and skips that part. `-b` only applies when the pull request step runs. Install it with `npm install -g git-multi-commit`.
+
+With `-bpa`, every repo in `.git-multi-commit.json` goes through the branch workflow instead of being pushed to directly:
+
+```bash
+git add .
+git commit -m "<one of 25 random messages>"
+# for every repo in the config, using that pair's account:
+gh api -X POST repos/<owner>/<repo>/git/refs     # acp-<date>, from the default branch
+git-multi-commit                                 # pushes to acp-<date>
+gh pr create --repo <owner>/<repo> --head <owner>:acp-<date>
+gh pr merge <pr> --merge
+gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/acp-<date>
+```
+
+- The pull request goes into each repo's default branch, even if the pair has another `branch` in its config.
+- Every account must be logged in to `gh` and able to push to its repo, and every repo needs at least one commit. `acp` checks this before committing anything.
+- A repo with nothing new gets no pull request, and its branch is removed. If one pair fails, the others still finish, and `acp` exits with an error at the end.
+- `.git-multi-commit.json` is pointed at the branch while `git-multi-commit` runs, then put back exactly as it was.
+- `-c` is ignored, as with any git-multi-commit run. Your local branch is not updated, because these repos have their own histories.
 
 ## Notes
 

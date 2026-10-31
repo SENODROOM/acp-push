@@ -29,6 +29,7 @@ npm install -g acp-push
 | `-u`, `--upstream` | Push to `origin`, then open a pull request to `upstream` |
 | `-ua`, `--upstream-allow` (or `--upstream-merge`) | Same as `-u`, then merge the pull request if you have write access to `upstream` |
 | `-bpa`, `--branch-pr-auto` | Push to a new branch on `origin`, open a pull request into the default branch, merge it, then delete the branch |
+| `-bopa`, `--branch-origin-pr-auto` | Same as `-bpa` |
 | `-b`, `--branch <name>` | Push to `<name>` instead of `main` |
 | `-m`, `--message <text>` | Use your own commit message instead of a random one |
 | `-c`, `--chunks` | Split your changes into 10 smaller commits (by change, not by file), then push |
@@ -42,6 +43,7 @@ acp                      # git push origin main
 acp -u                   # git push origin main, then open a PR to upstream
 acp -ua                  # same, then merge the PR if you have write access
 acp -bpa                 # new branch, PR into main, merge, delete the branch
+acp -bopa                # same as -bpa
 acp -b dev               # git push origin dev
 acp --branch=dev         # same as above
 acp -u -b fix            # git push origin fix, then open a PR to upstream
@@ -83,9 +85,9 @@ gh pr merge <pr> --merge
 - Of your logged-in `gh` accounts, `acp` uses one that can push to `upstream` (the owner's account first) for the push, the pull request and the merge.
 - The branch is not deleted after the merge.
 
-## One repo: branch, PR, merge, delete (`-bpa`)
+## One repo: branch, PR, merge, delete (`-bpa` / `-bopa`)
 
-`acp -bpa` does the whole branch workflow in the repo you are in, with no fork or `upstream` needed:
+`acp -bpa` (or `acp -bopa`) does the whole branch workflow in the repo you are in, with no fork or `upstream` needed:
 
 ```bash
 git add .

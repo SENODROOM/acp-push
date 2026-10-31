@@ -28,6 +28,8 @@ Options:
   -bpa, --branch-pr-auto  Push to a new branch on origin, open a pull request into
                           the default branch, merge it, then delete the branch
                           (-b <name> picks the branch name)
+  -bopa, --branch-origin-pr-auto
+                          Same as -bpa
   -b, --branch <name>     Push to <name> instead of "main"
   -m, --message <text>    Use your own commit message instead of a random one
   -c, --chunks            Split your changes into 10 smaller commits. With -u or
@@ -50,7 +52,7 @@ Pull requests:
   and opens the pull request from there. The branch is your current one,
   -b <name>, or a new acp-<date> branch when you are on upstream's default.
 
-One repo (-bpa):
+One repo (-bpa, -bopa):
   Needs the GitHub CLI (gh) and an "origin" remote on GitHub. The branch is
   named acp-<date> unless you give -b <name>. The merge needs write access to
   origin; without it the pull request stays open and the branch is kept.
@@ -71,6 +73,7 @@ Examples:
   acp -u                   ${dim('# push to origin/main, open a PR to upstream')}
   acp -ua                  ${dim('# same, then merge the PR if you can')}
   acp -bpa                 ${dim('# push a new branch, PR into main, merge, delete the branch')}
+  acp -bopa                ${dim('# same as -bpa')}
   acp -b dev               ${dim('# push to origin/dev')}
   acp -u --branch fix      ${dim('# push to origin/fix, open a PR to upstream')}
   acp -m "Fix login bug"   ${dim('# custom message, push to origin/main')}
@@ -122,6 +125,8 @@ function parseArgs(argv) {
         break;
       case '-bpa':
       case '--branch-pr-auto':
+      case '-bopa':
+      case '--branch-origin-pr-auto':
         options.bpa = true;
         options.pr = true;
         options.merge = true;
